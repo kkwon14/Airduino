@@ -9,23 +9,16 @@
 #include <RTClib.h>
 #include <Servo.h>
 #include <SPI.h>
-//#include <Wire.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-
 #include "PushButton.h"
 #include "AirduinoTypes.h"
 
 #define DHTTYPE DHT11 // DHT 11 temp/hum sensor
-
-/** OLED Display Definitions */
+#define OLED_RESET     -1
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-#define OLED_MOSI  10
-#define OLED_CLK   8
-#define OLED_DC    11
-#define OLED_CS    12
-#define OLED_RESET 13
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels
 
 const byte dhtPin = 2; // dht temp/humidity pin
 const byte toggleButtonPin = 3;
@@ -34,7 +27,7 @@ const byte downButtonPin = 5;
 const byte editButtonPin = 6;
 const byte resetButtonPin = 7;
 const byte motorPin = 9;
-
+int pos = 0;
 // Initialize pushbuttons.
 PushButton toggleButton(toggleButtonPin);
 PushButton upButton(upButtonPin);
@@ -46,14 +39,13 @@ DHT dht(dhtPin, DHTTYPE);
 
 //Initialize RTC.
 RTC_PCF8523 rtc;
-DateTime now = rtc.now();
+
+// Initialize Display.
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SSD1306 display2(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 //Initialize Servomotor.
 Servo myServo;
-
-//Initiailize Display.
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT,
-                         OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 
 // Airduino mode (auto, on, off)
 basicModes currBasicMode;
@@ -67,23 +59,22 @@ float currApparentTemperature;
 
 void setup() {
   Serial.begin(57600);
-  Serial.println("HELLO");
-
-  // Set RTC
+  //Serial.begin(9600);
+  //Set RTC
   if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
     while (1);
   }
-  Serial.println("HELLO");
   if (! rtc.initialized()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
-  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-  if (!display.begin(SSD1306_SWITCHCAPVCC)) {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
     Serial.println(F("SSD1306 allocation failed"));
     for (;;); // Don't proceed, loop forever
   }
-  Serial.println("HELLO");
+  if (!display2.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
+    Serial.println(F("SSD1306 0x3D allocation failed"));
+  }
   dht.begin();
   myServo.attach(motorPin); //PWM
 
@@ -95,19 +86,20 @@ void setup() {
   pinMode(motorPin, OUTPUT);
   digitalWrite(motorPin, LOW);
   display.display();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
   display.clearDisplay();
-  display.drawPixel(10, 10, WHITE);
-  display.display();
-  delay(2000);
-
 }
 
 void loop() {
-  //DateTime now = rtc.now();
-  Serial.println("SDFKLJSLF");
-  updateMeasurements();
-  doBasicFSM();
-  displayTime();
+  DateTime now = rtc.now();
+  //updateMeasurements();
+  //doBasicFSM();
+  String toDisplay = String(now.hour()) + ':' + String(now.minute()) + ':' + String(now.second());
+  displayTime(toDisplay);
+  delay(1000);
+    turnOn();
+
 }
 
 // Updates currTemperature, currHumidity, currApparentTemperature
@@ -117,8 +109,16 @@ static void updateMeasurements() {
   currApparentTemperature = dht.computeHeatIndex(currTemperature, currHumidity, true); // isFahrenheit = true
 }
 
-static void displayTime() {
-  //display.clearDisplay();
+static void displayTime(String theTime) {
+  display.display();
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(theTime);
+  display.display();
+  //delay(100);
+}
+
+static void printCuteBunny() {
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(10, 0);
@@ -126,11 +126,6 @@ static void displayTime() {
   display.println(F(" (^^) "));
   display.println(F("(\")(\")"));
   display.println(F("BUNNY! XD"));
-  display.print(F("The time is now: "));
-  display.print(now.unixtime());
-  display.print(F(__TIME__));
-  display.display();
-  delay(100);
 }
 
 static void doBasicFSM() {
@@ -167,7 +162,7 @@ static void doBasicFSM() {
       break;
   }
   // TODO Remove test print
-  Serial.println(currBasicMode);
+  //Serial.println(currBasicMode);
 }
 
 static void doAutoFSM() {
@@ -252,7 +247,7 @@ static void doAutoFSM() {
   }
 
   // TODO remove test print
-  Serial.println(currAutoMode);
+  //Serial.println(currAutoMode);
   printParams();
 }
 
@@ -306,13 +301,13 @@ static void checkAutoCondition() {
 
 // A function used for testing prints parameters
 static void printParams() {
-  Serial.print(autoParams.hour);
-  Serial.print(" ");
-  Serial.print(autoParams.minute);
-  Serial.print(" ");
-  Serial.print(autoTypesToString(autoParams.type));
-  Serial.print(" ");
-  Serial.println(autoParams.value);
+  //  Serial.print(autoParams.hour);
+  //  Serial.print(" ");
+  //  Serial.print(autoParams.minute);
+  //  Serial.print(" ");
+  //  Serial.print(autoTypesToString(autoParams.type));
+  //  Serial.print(" ");
+  //  Serial.println(autoParams.value);
 }
 
 // Resets to defaults.
@@ -329,11 +324,11 @@ void reset() {
 
 // TODO Remove temporary fake tester functions
 static int getHour() {
-  return now.hour();
+  return ;//now.hour();
 }
 
 static int getMinute() {
-  return now.minute();
+  return ;//now.minute();
 }
 
 static void turnOn() {
@@ -342,11 +337,18 @@ static void turnOn() {
     myServo.write(pos);              // tell servo to go to position in variable 'pos'
     delay(15);                       // waits 15ms for the servo to reach the position
   }
-}
-static void turnOff() {
-  for (int pos = 0; pos <= 180; pos += 1) { // servo pushes AC "ON" button
+  delay(150);
+  for (int pos = 180; pos <= 0; pos -= 5) { // servo pushes AC "ON" button
     // in steps of 1 degree
     myServo.write(pos);              // tell servo to go to position in variable 'pos'
     delay(15);                       // waits 15ms for the servo to reach the position
   }
+  delay(500);
+}
+static void turnOff() {
+  //  for (int pos = 0; pos <= 180; pos += 1) { // servo pushes AC "ON" button
+  //    // in steps of 1 degree
+  //    myServo.write(pos);              // tell servo to go to position in variable 'pos'
+  //    delay(15);                       // waits 15ms for the servo to reach the position
+  //  }
 }
