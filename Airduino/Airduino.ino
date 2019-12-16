@@ -6,11 +6,22 @@
 #include <EEPROM.h>
 #include <EEWrap.h>
 #include <DHT.h>
+#include <RTClib.h>
+#include <Servo.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "PushButton.h"
+#include "AirduinoTypes.h"
 
 #include "PushButton.h"
 #include "AirduinoTypes.h"
 
 #define DHTTYPE DHT11 // DHT 11 temp/hum sensor
+#define OLED_RESET     -1
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels
 
 const byte dhtPin = 2; // dht temp/humidity pin
 const byte toggleButtonPin = 3;
@@ -18,9 +29,8 @@ const byte upButtonPin = 4;
 const byte downButtonPin = 5;
 const byte editButtonPin = 6;
 const byte resetButtonPin = 7;
-
-// TODO Motor Remove temp LED tester.
-const byte tempLEDTesterPin = A3;
+const byte motorPin = 9;
+int pos = 0;
 
 // Initialize pushbuttons.
 PushButton toggleButton(toggleButtonPin);
@@ -31,6 +41,15 @@ PushButton editButton(editButtonPin);
 // Initialize DHT sensor.
 DHT dht(dhtPin, DHTTYPE);
 
+//Initialize RTC.
+RTC_PCF8523 rtc;
+
+// Initialize Display.
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+//Initialize Servomotor.
+Servo myServo;
+
 // Airduino mode (auto, on, off)
 basicModes currBasicMode;
 autoModes currAutoMode = autoInitialize;
@@ -40,20 +59,40 @@ autoModeParameters autoParams EEMEM;
 float currTemperature;
 float currHumidity;
 float currApparentTemperature;
+int currHour;
+int currMinute;
+
+// Current aircon state
+bool isAirconOn = false;
 
 void setup() {
-  Serial.begin(9600);
-
+  Serial.begin(57600);
+  // Set RTC
+  if (! rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    while (1);
+  }
+  if (! rtc.initialized()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x32
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;); // Don't proceed, loop forever
+  }
   dht.begin();
+  myServo.attach(motorPin); //PWM
 
   pinMode(resetButtonPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(resetButtonPin),
                   reset,
                   FALLING);
 
-  // TODO Motor Remove temp LED tester
-  pinMode(tempLEDTesterPin, OUTPUT);
-  digitalWrite(tempLEDTesterPin, LOW);
+  pinMode(motorPin, OUTPUT);
+  digitalWrite(motorPin, LOW);
+  display.display();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.clearDisplay();
 }
 
 void loop() {
@@ -61,11 +100,38 @@ void loop() {
   doBasicFSM();
 }
 
-// Updates currTemperature, currHumidity, currApparentTemperature
+// Updates currTemperature, currHumidity, currApparentTemperature, currHour, currMinute
 static void updateMeasurements() {
   currTemperature = dht.readTemperature(true); // isFahrenheit = true
   currHumidity = dht.readHumidity();
   currApparentTemperature = dht.computeHeatIndex(currTemperature, currHumidity, true); // isFahrenheit = true
+
+  DateTime now = rtc.now();
+  currHour = now.hour();
+  currMinute = now.minute();
+}
+
+// was current measurements
+static void displayMeasurements(String mode) {
+  display.display();
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print(mode);
+  display.println("     Time: " + convertTime(currHour, currMinute));
+  display.println("Temperature  : " + (String)currTemperature);
+  display.println("Humidity     : " + (String)currHumidity);
+  display.print("Apparent Temp: " + (String)currApparentTemperature + "       ");
+  display.display();
+}
+
+// Converts time to string format
+static String convertTime(int hour, int minute) {
+  String timeString = (String)hour + ":";
+  if (minute < 10) {
+    timeString += "0";
+  }
+  timeString += (String)minute;
+  return timeString;
 }
 
 static void doBasicFSM() {
@@ -81,9 +147,11 @@ static void doBasicFSM() {
       } else {
         currBasicMode = autoMode;
       }
+      
       break;
       
     case onMode: // Always on
+      displayMeasurements("On  ");
       turnOn();
       if (toggleButton.isPressed()) {
         currBasicMode = offMode;
@@ -93,6 +161,7 @@ static void doBasicFSM() {
       break;
       
     case offMode: // Always off
+      displayMeasurements("Off ");
       turnOff();
       if (toggleButton.isPressed()) {
         currBasicMode = autoMode;
@@ -101,8 +170,6 @@ static void doBasicFSM() {
       }
       break;
   }
-  // TODO Remove test print
-  Serial.println(currBasicMode);
 }
 
 static void doAutoFSM() {
@@ -112,6 +179,7 @@ static void doAutoFSM() {
       break;
       
     case autoOn:
+      displayMeasurements("AOn ");
       turnOn();
       checkAutoCondition();
       // Check for next condition
@@ -121,6 +189,7 @@ static void doAutoFSM() {
       break;
       
     case autoOff:
+      displayMeasurements("AOff");
       turnOff();
       checkAutoCondition();
       // Check for next condition
@@ -141,6 +210,11 @@ static void doAutoFSM() {
       if (editButton.isPressed()) {
         currAutoMode = editMinute;
       }
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Editing Hour");
+      display.println((String)autoParams.hour);
+      display.display();
       break;
       
     case editMinute:
@@ -155,6 +229,12 @@ static void doAutoFSM() {
       if (editButton.isPressed()) {
         currAutoMode = editType;
       }
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Editing Minute");
+      display.println((String)autoParams.minute);
+      display.display();
+      
       break;
       
     case editType:
@@ -169,6 +249,12 @@ static void doAutoFSM() {
       if (editButton.isPressed()) {
         currAutoMode = editValue;
       }
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Editing Mode");
+      display.println(autoTypesToString(autoParams.type));
+      display.display();
+      
       break;
       
     case editValue:
@@ -183,19 +269,25 @@ static void doAutoFSM() {
       if (editButton.isPressed()) {
         currAutoMode = autoInitialize;
       }
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Editing Value");
+      display.println(autoParams.value);
+      display.display();
+      
       break;
   }
-
-  // TODO remove test print
-  Serial.println(currAutoMode);
-  printParams();
 }
 
 // Checks if aircon should be on or off in auto mode and adjusts currAutoMode accordignly
 static void checkAutoCondition() {
   // Check time and appropriate condition (temp, hum, ap. temp)
+
+  DateTime now = rtc.now();
+
+  
   // Check time: if current time >= set time
-  if (compareTime(getHour(), getMinute(), autoParams.hour, autoParams.minute) != -1) {
+  if (compareTime(currHour, currMinute, autoParams.hour, autoParams.minute) != -1) {
     // Check condition
     switch (typeToEnum(autoParams.type)) {
       case temperature:
@@ -261,19 +353,31 @@ void reset() {
   autoParams.value = 0;
 }
 
-
-// TODO Remove temporary fake tester functions
-static int getHour() {
-  return 5;
-}
-
-static int getMinute() {
-  return 10;
-}
-
 static void turnOn() {
-  digitalWrite(tempLEDTesterPin, HIGH);
+  if (!isAirconOn) {
+    toggleMotor();
+    isAirconOn = true;
+  }
 }
+
 static void turnOff() {
-  digitalWrite(tempLEDTesterPin, LOW);
+  if (isAirconOn) {
+    toggleMotor();
+    isAirconOn = false;
+  }
+}
+
+static void toggleMotor() {
+    for (int pos = 0; pos <= 40; pos += 1) { // servo pushes AC "ON" button
+    // in steps of 1 degree
+    myServo.write(pos);              // tell servo to go to position in variable 'pos'
+    delay(15);                       // waits 15ms for the servo to reach the position
+  }
+  delay(150);
+  for (int pos = 40; pos <= 0; pos -= 5) { // servo pushes AC "ON" button
+    // in steps of 1 degree
+    myServo.write(pos);              // tell servo to go to position in variable 'pos'
+    delay(15);                       // waits 15ms for the servo to reach the position
+  }
+  delay(200);
 }
